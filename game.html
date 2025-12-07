@@ -1,0 +1,266 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Game - Banana Math Quiz</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand"><a href="index.html">🍌 Banana Math Quiz</a></div>
+    <nav>
+      <a href="index.html">Home</a>
+      <a href="game.html">Game</a>
+      <a href="leaderboard.html">Leaderboard</a>
+      <a href="logout.php">Logout</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div id="meta" class="meta">
+      <div id="player">Player : <span id="playerName">Guest</span></div>
+      <div>Q <span id="qIndex">0</span> / 10</div>
+      <div>Score: <span id="score">0</span></div>
+      <div>Time: <span id="time">0</span>s</div>
+    </div>
+
+    <div class="game-grid">
+      <div class="question-area">
+        <img id="questionImg" src="" alt="question image" style="max-width:100%; border:1px solid #222; background:#fff; padding:8px;">
+        <p class="prompt">What is the value?</p>
+
+        <div class="controls">
+          <button id="hintBtn" class="btn small">Hint</button>
+          <button id="skipBtn" class="btn small outline">Skip</button>
+          <button id="nextBtn" class="btn small" disabled>Next</button>
+        </div>
+      </div>
+
+      <div class="answers">
+        <button class="answer btn answerBtn" data-index="0">-</button>
+        <button class="answer btn answerBtn" data-index="1">-</button>
+        <button class="answer btn answerBtn" data-index="2">-</button>
+        <button class="answer btn answerBtn" data-index="3">-</button>
+      </div>
+    </div>
+
+    <div id="final" style="display:none;">
+      <h3>Game finished</h3>
+      <p>Your score: <span id="finalScore"></span> / 10</p>
+      <a href="leaderboard.html" class="btn">View Leaderboard</a>
+    </div>
+  </main>
+
+   <div class="end-text">
+				<p>Copyright © @2025. All Rights Reserved.</p>
+			</div>
+
+<script>
+
+  let gameFinished = false;
+
+/*
+Game logic:
+- fetch questions from backend/fetch_questions.php?n=10
+- Each item: {question: imageURL, solution: number}
+- Build 4 options (one correct + 3 random dummies)
+- Timer per question depends on mode: kids=45, adult=30
+- Hint removes one wrong answer per press
+- Skip counts as wrong and moves to next
+*/
+
+let questions = [];
+let qIndex = 0;
+let score = 0;
+let timerInterval = null;
+let timeLeft = 0;
+let currentCorrect = null;
+let hintRemovals = 0;
+let mode = 'adult';
+
+// load player info (server session may have set user; we attempt to check via simple fetch to set name/mode)
+async function loadPlayer() {
+  // no dedicated endpoint to read session, but we can call leaderboard_api to see if session exists
+  // For simplicity, we'll attempt to read via a small backend endpoint (we will reuse leaderboard_api to see 'me')
+  try {
+    const res = await fetch('leaderboard_api.php');
+    const data = await res.json();
+    // note: leaderboard_api returns 'me' only if session exists
+    // we'll also set player name from session via a small PHP snippet
+    // Instead of extra endpoint, we'll ask the server to echo session values:
+    const sres = await fetch('session_info.php').catch(()=>null);
+    if(sres) {
+      const sdata = await sres.json();
+      if(sdata && sdata.success) {
+        document.getElementById('playerName').textContent = sdata.name || 'Guest';
+        mode = sdata.mode || 'adult';
+      }
+    }
+  } catch(e) {
+    console.warn('Could not fetch session info', e);
+  }
+}
+
+async function fetchQuestions() {
+  const res = await fetch('fetch_questions.php?n=10');
+  const data = await res.json();
+  if(!data.success) {
+    alert('Could not fetch questions');
+    return;
+  }
+  questions = data.questions;
+  // if server returns fewer than 10, still continue
+  startQuestion(0);
+}
+
+function startQuestion(idx) {
+  qIndex = idx;
+  document.getElementById('qIndex').textContent = Math.min(qIndex+1, 10);
+  if(qIndex >= questions.length) {
+    finishGame();
+    return;
+  }
+  hintRemovals = 0;
+  const q = questions[qIndex];
+  currentCorrect = parseInt(q.solution);
+  document.getElementById('questionImg').src = q.question;
+  // build answers: correct + 3 wrong random numbers within +/-10
+  const answers = generateAnswers(currentCorrect);
+  const buttons = document.querySelectorAll('.answerBtn');
+  buttons.forEach((b,i) => {
+    b.disabled = false;
+    b.style.visibility = 'visible';
+    b.textContent = answers[i];
+    b.dataset.value = answers[i];
+    b.classList.remove('correct','wrong','disabled');
+  });
+
+  // set time based on mode
+  timeLeft = (mode === 'kids') ? 45 : 30;
+  document.getElementById('time').textContent = timeLeft;
+  document.getElementById('score').textContent = score;
+  document.getElementById('nextBtn').disabled = true;
+
+  if(timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(()=>{
+    timeLeft--;
+    document.getElementById('time').textContent = timeLeft;
+    if(timeLeft <= 0) {
+      clearInterval(timerInterval);
+      markWrongAndNext();
+    }
+  }, 1000);
+}
+
+function generateAnswers(correct) {
+  const set = new Set([correct]);
+  while(set.size < 4) {
+    let delta = Math.floor(Math.random()*11) - 5; // -5..5
+    if(delta === 0) delta = (Math.random()<0.5) ? -1 : 1;
+    let candidate = correct + delta;
+    // ensure positive integer and not too large
+    if(candidate < 0) candidate = Math.abs(candidate) + 1;
+    set.add(candidate);
+  }
+  const arr = Array.from(set);
+  // shuffle
+  for(let i=arr.length-1;i>0;i--) {
+    const j = Math.floor(Math.random()*(i+1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+document.addEventListener('click', async (e) => {
+  if(e.target.classList.contains('answerBtn')) {
+    const val = parseInt(e.target.dataset.value);
+    clearInterval(timerInterval);
+    if(val === currentCorrect) {
+      score++;
+      e.target.classList.add('correct');
+    } else {
+      e.target.classList.add('wrong');
+      // highlight correct
+      document.querySelectorAll('.answerBtn').forEach(b=>{
+        if(parseInt(b.dataset.value) === currentCorrect) b.classList.add('correct');
+      });
+    }
+    document.getElementById('score').textContent = score;
+    document.getElementById('nextBtn').disabled = false;
+    // disable all
+    document.querySelectorAll('.answerBtn').forEach(b=> b.disabled = true);
+  } else if(e.target.id === 'skipBtn') {
+    clearInterval(timerInterval);
+    markWrongAndNext();
+  } else if(e.target.id === 'hintBtn') {
+    // remove one wrong option per click
+    let btns = Array.from(document.querySelectorAll('.answerBtn')).filter(b => !b.disabled && parseInt(b.dataset.value)!==currentCorrect);
+    if(btns.length>0) {
+      // hide one random wrong
+      const idx = Math.floor(Math.random()*btns.length);
+      btns[idx].style.visibility = 'hidden';
+      btns[idx].disabled = true;
+      hintRemovals++;
+    }
+  } else if(e.target.id === 'nextBtn') {
+    // next question
+    startQuestion(qIndex+1);
+  }
+});
+
+// marks current as wrong then moves to next after brief delay
+function markWrongAndNext() {
+  // show correct visually
+  document.querySelectorAll('.answerBtn').forEach(b=>{
+    if(parseInt(b.dataset.value) === currentCorrect) b.classList.add('correct');
+    b.disabled = true;
+  });
+  document.getElementById('nextBtn').disabled = false;
+  // move to next after 1s
+  setTimeout(()=> startQuestion(qIndex+1), 900);
+}
+
+async function finishGame() {
+  if (gameFinished) return;  // <-- prevents double saving
+  gameFinished = true;
+
+  document.querySelector('.game-grid').style.display = 'none';
+  document.getElementById('final').style.display = 'block';
+  document.getElementById('finalScore').textContent = score;
+
+  try {
+    await fetch('submit_score.php', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({score})
+    });
+  } catch(e) {
+    console.warn('Could not submit score', e);
+  }
+}
+
+
+// small helper to create session_info endpoint if missing
+// We'll fetch a tiny file backend/session_info.php that echoes session name+mode
+// If it doesn't exist on server, skip
+
+// on load
+(async function init(){
+  // try get session info (calls server-endpoint)
+  try {
+    const r = await fetch('session_info.php');
+    if(r.ok) {
+      const d = await r.json();
+      if(d.success) {
+        document.getElementById('playerName').textContent = d.name || 'Guest';
+        mode = d.mode || 'adult';
+      }
+    }
+  } catch(e) { /* ignore */ }
+
+  // fetch questions and start
+  await fetchQuestions();
+})();
+</script>
+</body>
+</html>
